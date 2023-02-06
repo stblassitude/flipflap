@@ -1,0 +1,4 @@
+(sym_lib_table
+  (lib (name "xxxx")(type "KiCad")(uri "/Users/stb/Downloads/ti.kicad_sym")(options "")(descr ""))
+  (lib (name "flipflap")(type "KiCad")(uri "${KIPRJMOD}/flipflap.kicad_sym")(options "")(descr ""))
+)

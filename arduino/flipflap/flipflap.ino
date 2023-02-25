@@ -9,6 +9,11 @@
 byte desired_position[NCOLS][NROWS];
 byte current_position[NCOLS][NROWS];
 
+/**
+ * Maps ISO-8859-1 characters (char) to their position on the display (index). Of the 64 encodings, 0 and 63 are not used; they are encoded as \0.
+ */
+const char lookup[64] = "\000ABCDEFGHIJKLMNOPQRSTUVWXYZ ;=()?!,-./0123456789:\xd6\xc4\xd8\xdc\000";
+
 byte outputs[3];
 byte input;
 
@@ -116,12 +121,12 @@ void set_start() {
 
 
 /**
- * Trigger t2. We wait half a half-cycle for all motors to come to a halt.
+ * Trigger motor stop. We wait half a half-cycle for all motors to come to a halt.
  */
 void stop_all() {
     select_none();
     update_outputs();
-    delay(5);
+    delay(50);
     select_all_columns();
     update_outputs();
     delay(20);
@@ -137,12 +142,12 @@ void stop_all() {
  */
 int read_col_row(int col, int row) {
   int p = 63;
-  int matches = 5; // five consecutive identical reads should be reliable
+  int matches = 20; // five consecutive identical reads should be reliable
   select_none();
   select_column(col);
   select_line(row);
   update_outputs();
-  for (int i = 30; i--; ) {
+  for (int i = 200; i--; ) {
     current_position[col][row] = read_input() & 0x3f;
     if (current_position[col][row] != 63 && current_position[col][row] == p)
       matches--;
@@ -152,6 +157,20 @@ int read_col_row(int col, int row) {
     delay(1);
   }
   return current_position[col][row];
+}
+
+int char_to_position(char c) {
+  for (int i = 64; i--; ) {
+    if (c == lookup[i])
+      return i ^ 0x3f;
+  }
+  return 63;
+}
+
+char position_to_char(int p) {
+  if (p == 0 || p == 63)
+    return '_';
+  return lookup[p ^ 0x3f];
 }
 
 /**
@@ -190,13 +209,15 @@ void print_control_status() {
   Serial.print("Desired: ");
   for (int col = 0; col < NCOLS; col++) {
     for (int row = 0; row < NROWS; row++) {
-      Serial.printf("%3d, ", desired_position[col][0]);
+      int p = desired_position[col][0];
+      Serial.printf("%c (%3d), ", position_to_char(p), p);
     }
   }
   Serial.print("\nCurrent: ");
   for (int col = 0; col < NCOLS; col++) {
     for (int row = 0; row < NROWS; row++) {
-      Serial.printf("%3d, ", current_position[col][0]);
+      int p = current_position[col][0];
+      Serial.printf("%c (%3d), ", position_to_char(p), p);
     }
   }
   Serial.print("\n");
@@ -234,10 +255,8 @@ void control_displays() {
     int nudge;
 
     yield();
-    print_control_status();
-    select_none();
-    update_outputs();
     deadline = INT_MAX;
+    nudge = 0;
     for (int col = 0; col < NCOLS; col++) {
       // start motors on any display not in the correct position
       for (int row = 0; row < NROWS; row++) {
@@ -246,26 +265,33 @@ void control_displays() {
           if (dl < deadline) {
             deadline = dl;
           }
+          debug("  starting %d/%d, steps %d\n", col, row, desired_position[col][row] - current_position[col][row])
+          select_none();
+          update_outputs();
           select_column(col);
           select_line(row);
+          delay(5);
+          set_start();
+          update_outputs();
+          delay(5);
+          select_none();
+          set_start();
+          update_outputs();
+          nudge = 1;
         }
       }
     }
-    if (!any_selected()) {
+    if (!nudge) {
       delay(1000); // nothing to do, give time to other tasks
       continue;
     }
-    delay(5); // wait for all selects to disengage
-    set_start();
-    update_outputs();
-    delay(5);
-    select_none();
-    update_outputs();
+    print_control_status();
 
     debug("  deadline %d\n", deadline);
     delay(deadline);
     do {
       nudge = 0;
+      debug("  reading\n");
       stop_all();
       for (int col = 0; col < NCOLS; col++) {
         for (int row = 0; row < NROWS; row++) {
@@ -274,27 +300,45 @@ void control_displays() {
             nudge = 1;
         }
       }
-      debug("  nudge %d\n", nudge);
+      print_control_status();
       select_none();
       if (nudge) {
         for (int col = 0; col < NCOLS; col++) {
           for (int row = 0; row < NROWS; row++) {
             if (desired_position[col][row] != 63 && current_position[col][row] == 63) {
               // not yet in reading position, quickly start it up and stop it right away again
+              select_none();
+              update_outputs();
               select_column(col);
               select_line(row);
+              set_start();
+              update_outputs();
+              delay(5);
+              select_none();
+              set_start();
+              update_outputs();
+              debug("  nudge %d/%d\n", col, row);
+              print_control_status();
             }
           }
         }
-        print_control_status();
-        set_start();
-        update_outputs();
-        delay(5);
-        select_none();
-        update_outputs();
-        delay(10); // half of a half-cycle for the motors
+        // print_control_status();
+        // set_start();
+        // update_outputs();
+        // delay(5);
+        // select_none();
+        // update_outputs();
+        // delay(10); // half of a half-cycle for the motors
       }
     } while (nudge);
+    debug("  done nudging\n");
+    print_control_status();
+    for (int col = 0; col < NCOLS; col++) {
+      for (int row = 0; row < NROWS; row++) {
+        current_position[col][row] = 63;
+        desired_position[col][row] = 63;
+      }
+    }
   }
 }
 
@@ -312,8 +356,7 @@ void console_input() {
     s = Serial.readString();
     s.trim();
     if (s.length() > 0) {
-      int i = s.toInt();
-      if (i == 0) {
+      if (s.equals("^")) {
         Serial.printf("Stopping...\n");
         for (int col = 0; col < NCOLS; col++) {
           for (int row = 0; row < NROWS; row++) {
@@ -324,10 +367,25 @@ void console_input() {
         stop_all();
         continue;
       }
-      Serial.printf("Moving to position %d\n", i);
+
+      int space = char_to_position(' ');
+      int i = 0;
       for (int col = 0; col < NCOLS; col++) {
         for (int row = 0; row < NROWS; row++) {
-          desired_position[col][row] = s.toInt();
+          desired_position[col][row] = space;
+        }
+      }
+      s.toUpperCase();
+      Serial.printf("Updating \"%s\"\n", s);
+      for (int col = 0; col < NCOLS && i < s.length(); col++) {
+        for (int row = 0; row < NROWS && i < s.length(); row++) {
+          int p;
+          do {
+            p = char_to_position(s.charAt(i++));
+          } while (p <= 0 && p >= 63 && i < s.length());
+          if (p != 0 && p != 63) {
+            desired_position[col][row] = p;
+          }
         }
       }
     }
@@ -366,10 +424,10 @@ void setup() {
   for (int i = 10; i--; )
     stop_all();
 
-  Serial.printf("\n\nWaiting for keypress to start...");
-  while(!Serial.available())
-    delay(10);
-  Serial.read();
+  // Serial.printf("\n\nWaiting for keypress to start...");
+  // while(!Serial.available())
+  //   delay(10);
+  // Serial.read();
 
   Serial.printf("\n\nReady\n");
 

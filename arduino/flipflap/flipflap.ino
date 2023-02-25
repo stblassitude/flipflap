@@ -136,12 +136,21 @@ void stop_all() {
  * @param row the row
  */
 int read_col_row(int col, int row) {
+  int p = 63;
+  int matches = 5; // five consecutive identical reads should be reliable
   select_none();
   select_column(col);
   select_line(row);
   update_outputs();
-  delay(10);
-  current_position[col][row] = read_input() & 0x3f;
+  for (int i = 30; i--; ) {
+    current_position[col][row] = read_input() & 0x3f;
+    if (current_position[col][row] != 63 && current_position[col][row] == p)
+      matches--;
+    if (matches <= 0)
+      break;
+    p = current_position[col][row];
+    delay(1);
+  }
   return current_position[col][row];
 }
 
@@ -204,7 +213,7 @@ long compute_deadline(int col, int row) {
   int distance = desired_position[col][row] - current_position[col][row];
   if (distance < 0)
     distance =+ 62;
-  return (5000 / distance) - 10; // 5000 and 10 experimentally determined  
+  return (5500 / distance) - 30; // experimentally determined
 }
 
 /**
@@ -354,9 +363,6 @@ void setup() {
   pinMode(D3, OUTPUT); // /PL for input shift register
   digitalWrite(D5, HIGH); 
   
-  select_none();
-  update_outputs();
-  // delay(1000);
   for (int i = 10; i--; )
     stop_all();
 

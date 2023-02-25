@@ -6,8 +6,8 @@
 #define NROWS 1
 #define DEBUG 1
 
-byte desired_position[NCOLS][NROWS];
-byte current_position[NCOLS][NROWS];
+volatile byte desired_position[NCOLS][NROWS];
+volatile byte current_position[NCOLS][NROWS];
 
 /**
  * Maps ISO-8859-1 characters (char) to their position on the display (index). Of the 64 encodings, 0 and 63 are not used; they are encoded as \0.
@@ -142,19 +142,21 @@ void stop_all() {
  */
 int read_col_row(int col, int row) {
   int p = 63;
-  int matches = 20; // five consecutive identical reads should be reliable
-  select_none();
-  select_column(col);
-  select_line(row);
-  update_outputs();
-  for (int i = 200; i--; ) {
+  int matches = 5; // a number of consecutive identical reads should be reliable
+  for (int i = 10; i--; ) {
+    select_none();
+    update_outputs();
+    delay(2);
+    select_column(col);
+    select_line(row);
+    update_outputs();
+    delay(5);
     current_position[col][row] = read_input() & 0x3f;
     if (current_position[col][row] != 63 && current_position[col][row] == p)
       matches--;
     if (matches <= 0)
       break;
     p = current_position[col][row];
-    delay(1);
   }
   return current_position[col][row];
 }
@@ -231,10 +233,24 @@ void print_control_status() {
  * @return absolute millis after which the motor should be stopped.
  */
 long compute_deadline(int col, int row) {
-  int distance = desired_position[col][row] - current_position[col][row];
+  int distance = current_position[col][row] - desired_position[col][row];
   if (distance < 0)
-    distance =+ 62;
-  return (5500 / distance) - 30; // experimentally determined
+    distance += 62;
+    debug("  distance %d/%d = %d-%d = %d\n", col, row, current_position[col][row], desired_position[col][row], distance);
+  return (4500 * distance / 62) - 50; // experimentally determined
+}
+
+void nudge(int col, int row) {
+  select_none();
+  update_outputs();
+  select_column(col);
+  select_line(row);
+  set_start();
+  update_outputs();
+  delay(5);
+  select_none();
+  set_start();
+  update_outputs();
 }
 
 /**
@@ -244,28 +260,29 @@ void control_displays() {
   int deadline;
   Serial.printf("Starting control loop\n");
   stop_all();
+  int space = char_to_position(' ');
   for (int col = 0; col < NCOLS; col++) {
     for (int row = 0; row < NROWS; row++) {
-      desired_position[col][row] = 63;
+      desired_position[col][row] = space;
       read_col_row(col, row);
     }
   }
 
   for (;;) {
-    int nudge;
+    int running;
 
     yield();
     deadline = INT_MAX;
-    nudge = 0;
+    running = 0;
     for (int col = 0; col < NCOLS; col++) {
       // start motors on any display not in the correct position
       for (int row = 0; row < NROWS; row++) {
         if (desired_position[col][row] != 63 && desired_position[col][row] != current_position[col][row]) {
-          unsigned long dl = compute_deadline(col, row);
+          int dl = compute_deadline(col, row);
           if (dl < deadline) {
             deadline = dl;
           }
-          debug("  starting %d/%d, steps %d\n", col, row, desired_position[col][row] - current_position[col][row])
+          debug("  starting %d/%d, dl %d\n", col, row, dl);
           select_none();
           update_outputs();
           select_column(col);
@@ -277,11 +294,11 @@ void control_displays() {
           select_none();
           set_start();
           update_outputs();
-          nudge = 1;
+          running = 1;
         }
       }
     }
-    if (!nudge) {
+    if (!running) {
       delay(1000); // nothing to do, give time to other tasks
       continue;
     }
@@ -290,55 +307,38 @@ void control_displays() {
     debug("  deadline %d\n", deadline);
     delay(deadline);
     do {
-      nudge = 0;
+      running = 0;
       debug("  reading\n");
       stop_all();
       for (int col = 0; col < NCOLS; col++) {
         for (int row = 0; row < NROWS; row++) {
           read_col_row(col, row);
           if (desired_position[col][row] != 63 && current_position[col][row] == 63)
-            nudge = 1;
+            running = 1;
         }
       }
       print_control_status();
       select_none();
-      if (nudge) {
+      if (running) {
         for (int col = 0; col < NCOLS; col++) {
           for (int row = 0; row < NROWS; row++) {
             if (desired_position[col][row] != 63 && current_position[col][row] == 63) {
               // not yet in reading position, quickly start it up and stop it right away again
-              select_none();
-              update_outputs();
-              select_column(col);
-              select_line(row);
-              set_start();
-              update_outputs();
-              delay(5);
-              select_none();
-              set_start();
-              update_outputs();
               debug("  nudge %d/%d\n", col, row);
+              nudge(col, row);
               print_control_status();
             }
           }
         }
-        // print_control_status();
-        // set_start();
-        // update_outputs();
-        // delay(5);
-        // select_none();
-        // update_outputs();
-        // delay(10); // half of a half-cycle for the motors
       }
-    } while (nudge);
+    } while (running);
     debug("  done nudging\n");
     print_control_status();
-    for (int col = 0; col < NCOLS; col++) {
-      for (int row = 0; row < NROWS; row++) {
-        current_position[col][row] = 63;
-        desired_position[col][row] = 63;
-      }
-    }
+    // for (int col = 0; col < NCOLS; col++) {
+    //   for (int row = 0; row < NROWS; row++) {
+    //     desired_position[col][row] = 63;
+    //   }
+    // }
   }
 }
 
@@ -354,13 +354,11 @@ void console_input() {
       continue;
     }
     s = Serial.readString();
-    s.trim();
     if (s.length() > 0) {
       if (s.equals("^")) {
         Serial.printf("Stopping...\n");
         for (int col = 0; col < NCOLS; col++) {
           for (int row = 0; row < NROWS; row++) {
-            current_position[col][row] = 63;
             desired_position[col][row] = 63;
           }
         }
@@ -411,6 +409,19 @@ BasicCoopTask<CoopTaskStackAllocatorAsMember<2000>> heartbeatTask("heartbeat", h
 BasicCoopTask<CoopTaskStackAllocatorAsMember<2000>> inputTask("input", console_input);
 BasicCoopTask<CoopTaskStackAllocatorAsMember<2000>> controlTask("control", control_displays);
 
+void nudgetest() {
+  for (;;) {
+    if (Serial.available()) {
+      Serial.read();
+      Serial.printf("\nnudge\n");
+      nudge(0, 0);
+    }
+    read_col_row(0, 0);
+    Serial.printf("position %3d\n", current_position[0][0]);
+    delay(1000);
+  }
+}
+
 void setup() {
   Serial.begin(230400);
   SPI.begin();
@@ -428,6 +439,8 @@ void setup() {
   // while(!Serial.available())
   //   delay(10);
   // Serial.read();
+
+  // nudgetest();
 
   Serial.printf("\n\nReady\n");
 

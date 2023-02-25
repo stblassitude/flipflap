@@ -53,100 +53,80 @@ byte read_input() {
   return input;
 }
 
+
+/**
+ * De-selects all columns, lines, and start.
+ */
+void select_none() {
+  outputs[0] = 0;
+  outputs[1] = 0;
+  outputs[2] = 0;
+}
+
 /**
  * Select one ADL.
  * 
- * @param line ADL to select, 0-7. Any other value will deselect all ADLs.
+ * @param line ADL to select, 0-7.
  */
-void set_line(int line) {
-  if (line < 0 && line > 7)
-    outputs[0] = 0;
-  else
-    outputs[0] = 1 << line;
+void select_line(int line) {
+  if (line >= 0 && line <= 7)
+    outputs[0] |= 1 << line;
 }
 
 /**
  * Select one ADC.
  * 
- * @param column ADC to select, 0.14. Any other value will deselect all ADCs.
+ * @param column ADC to select.
  */
-void set_column(int column) {
+void select_column(int column) {
   if (column < 0 || column > 14) {
-    outputs[1] = 0;
-    outputs[2] = 0;
+    return;
   } else if (column < 8) {
-    outputs[1] = (1 << column);
-    outputs[2] = outputs[2] & 0x80;
+    outputs[1] |= 1 << column;
   } else {
-    outputs[1] = 0;
-    outputs[2] = (outputs[2] & 0x80) | (1 << (column - 8));
+    outputs[2] |= 1 << (column - 8);
   }
 }
 
 /**
  * Select all columns at once. This is mainly used to top all motors.
  */
-void set_all_columns() {
+void select_all_columns() {
   outputs[1] = 0xff;
-  outputs[2] = 0x74;
+  outputs[2] = 0x7f;
 }
 
 /**
- * Set or reset the START line. When setting start to 0, will also deselect all ADLs and ADCs.
+ * Returns true if at least one line or column is selected
+ * 
+ * @returns true if any line or column is selected
+ */
+int any_selected() {
+  return outputs[0] || outputs[1] || outputs[2];
+}
+
+/**
+ * Set the START line.
  * 
  * @param start 1 to start
  */
-void set_start(int start) {
-  if (start) {
-    outputs[2] = outputs[2] | 0x80;
-  } else {
-    outputs[1] = 0;
-    outputs[2] = 0;
-  }
+void set_start() {
+  outputs[2] = outputs[2] | 0x80;
 }
 
-/**
- * Update outputs to start a single display, identified by column and line.
- * 
- * @param column the column
- * @param line the line
- */
-void start_moving(int column, int line) {
-  set_line(column);
-  set_column(line);
-  set_start(1);
-  update_outputs();
-  delay(10);
-  set_start(0);
-  update_outputs();
-}
 
 /**
- * Stop all displays on this column.
- * 
- * @param column the column
- */
-void stop_col(int col) {
-    set_start(0);
-    update_outputs();
-    delay(50);
-    set_column(col);
-    update_outputs();
-    delay(50);
-    set_start(0);
-    update_outputs();
-}
-
-/**
- * Trigger t2. We wait 20ms for all motors to come to a halt.
+ * Trigger t2. We wait half a half-cycle for all motors to come to a halt.
  */
 void stop_all() {
-    set_start(0);
+    select_none();
     update_outputs();
     delay(5);
-    set_all_columns();
+    select_all_columns();
     update_outputs();
     delay(20);
+    select_none();
+    update_outputs();
 }
 
 /**
@@ -156,8 +136,9 @@ void stop_all() {
  * @param row the row
  */
 int read_col_row(int col, int row) {
-  set_column(col);
-  set_line(row);
+  select_none();
+  select_column(col);
+  select_line(row);
   update_outputs();
   delay(10);
   current_position[col][row] = read_input() & 0x3f;
@@ -197,15 +178,17 @@ void print_state() {
  * Dump the state to the serial console.
  */
 void print_control_status() {
-  Serial.print("Status: ");
+  Serial.print("Desired: ");
   for (int col = 0; col < NCOLS; col++) {
-    Serial.print(desired_position[col][0]);
-    Serial.print(",");
+    for (int row = 0; row < NROWS; row++) {
+      Serial.printf("%3d, ", desired_position[col][0]);
+    }
   }
-  Serial.print("  ");
+  Serial.print("\nCurrent: ");
   for (int col = 0; col < NCOLS; col++) {
-    Serial.print(current_position[col][0]);
-    Serial.print(",");
+    for (int row = 0; row < NROWS; row++) {
+      Serial.printf("%3d, ", current_position[col][0]);
+    }
   }
   Serial.print("\n");
 }
@@ -221,7 +204,7 @@ long compute_deadline(int col, int row) {
   int distance = desired_position[col][row] - current_position[col][row];
   if (distance < 0)
     distance =+ 62;
-  return (5500 / distance) - 10; // 5500 and 10 experimentally determined  
+  return (5000 / distance) - 10; // 5000 and 10 experimentally determined  
 }
 
 /**
@@ -233,49 +216,76 @@ void control_displays() {
   stop_all();
   for (int col = 0; col < NCOLS; col++) {
     for (int row = 0; row < NROWS; row++) {
-      desired_position[col][row] = 1;
+      desired_position[col][row] = 63;
       read_col_row(col, row);
     }
   }
 
   for (;;) {
     int nudge;
+
+    yield();
     print_control_status();
-    deadline = INT_MAX; // 5500 plus margin
+    select_none();
+    update_outputs();
+    deadline = INT_MAX;
     for (int col = 0; col < NCOLS; col++) {
       // start motors on any display not in the correct position
       for (int row = 0; row < NROWS; row++) {
-        if (desired_position[col][row] != current_position[col][row]) {
+        if (desired_position[col][row] != 63 && desired_position[col][row] != current_position[col][row]) {
           unsigned long dl = compute_deadline(col, row);
           if (dl < deadline) {
             deadline = dl;
           }
-          start_moving(col, row);
+          select_column(col);
+          select_line(row);
         }
       }
     }
-    debug("  deadline %d\n", deadline);
-    if (deadline == INT_MAX) {
-      delay(100); // nothing to do, give time to other tasks
+    if (!any_selected()) {
+      delay(1000); // nothing to do, give time to other tasks
       continue;
     }
+    delay(5); // wait for all selects to disengage
+    set_start();
+    update_outputs();
+    delay(5);
+    select_none();
+    update_outputs();
 
+    debug("  deadline %d\n", deadline);
     delay(deadline);
     do {
-      debug("  nudge %d\n", nudge);
       nudge = 0;
       stop_all();
       for (int col = 0; col < NCOLS; col++) {
         for (int row = 0; row < NROWS; row++) {
-          if (read_col_row(col, row) == 63) {
-            // not yet in reading position, quickly start it up and stop it right away again
-            start_moving(col, row);
+          read_col_row(col, row);
+          if (desired_position[col][row] != 63 && current_position[col][row] == 63)
             nudge = 1;
-          }
         }
       }
+      debug("  nudge %d\n", nudge);
+      select_none();
+      if (nudge) {
+        for (int col = 0; col < NCOLS; col++) {
+          for (int row = 0; row < NROWS; row++) {
+            if (desired_position[col][row] != 63 && current_position[col][row] == 63) {
+              // not yet in reading position, quickly start it up and stop it right away again
+              select_column(col);
+              select_line(row);
+            }
+          }
+        }
+        print_control_status();
+        set_start();
+        update_outputs();
+        delay(5);
+        select_none();
+        update_outputs();
+        delay(10); // half of a half-cycle for the motors
+      }
     } while (nudge);
-    yield();
   }
 }
 
@@ -343,8 +353,17 @@ void setup() {
   digitalWrite(D3, LOW); 
   pinMode(D3, OUTPUT); // /PL for input shift register
   digitalWrite(D5, HIGH); 
-  memset(outputs, 0, 3);
+  
+  select_none();
   update_outputs();
+  // delay(1000);
+  for (int i = 10; i--; )
+    stop_all();
+
+  Serial.printf("\n\nWaiting for keypress to start...");
+  while(!Serial.available())
+    delay(10);
+  Serial.read();
 
   Serial.printf("\n\nReady\n");
 

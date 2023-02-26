@@ -6,7 +6,7 @@
 #include <SPI.h>
 #include <WiFiManager.h> 
 
-#define NCOLS 3
+#define NCOLS 4
 #define NROWS 1
 #define DEBUG 0
 
@@ -16,7 +16,6 @@ volatile byte current_position[NCOLS][NROWS];
 /**
  * Maps ISO-8859-1 characters (char) to their position on the display (index). Of the 64 encodings, 0 and 63 are not used; they are encoded as \0.
  */
-// const char lookup[64] = "\000ABCDEFGHIJKLMNOPQRSTUVWXYZ ;=()?!,-./0123456789:\xd6\xc4\xd8\xdc\000";
 const char lookup[64] = 
   "\000\xdc\xd8\xc4\xd6:98"
   "76543210"
@@ -236,7 +235,7 @@ void print_control_status() {
       Serial.printf("%c (%3d), ", position_to_char(p), p);
     }
   }
-  Serial.print("\n");
+  Serial.println("");
 #endif
 }
 
@@ -301,7 +300,7 @@ String escapeHtml(String s) {
 void updateText(String s) {
   s.trim();
   if (s.equals("^")) {
-    Serial.printf("Stopping...\n");
+    Serial.println("Stopping...");
     for (int col = 0; col < NCOLS; col++) {
       for (int row = 0; row < NROWS; row++) {
         desired_position[col][row] = 63;
@@ -345,7 +344,7 @@ void updateText(String s) {
  */
 void control_displays() {
   int deadline;
-  Serial.printf("Starting control loop\n");
+  Serial.println("Starting control loop");
   stop_all();
   int space = char_to_position(' ');
   for (int col = 0; col < NCOLS; col++) {
@@ -468,7 +467,7 @@ ESP8266WebServer server(80);
 
 
 void setupWifi() {
-  Serial.print("Connecting");
+  Serial.print("\n\nConnecting to WiFi...");
   char apname[64];
   sprintf(apname, "flipflap-%02x%02x%02x", WiFi.macAddress()[3], WiFi.macAddress()[4], WiFi.macAddress()[5]);
   wifiManager.autoConnect(apname);
@@ -497,7 +496,7 @@ void setupWebserver() {
     server.send(404, "text/plain", message);
   });
   server.on("/", [](){
-    String text = F("CCC HH");
+    String text = "CCC HH";
     for (int i = 0; i < server.args(); i++) {
       if (server.argName(i) == "text") {
         text = server.arg(i);
@@ -505,14 +504,14 @@ void setupWebserver() {
       }
     }
     server.send(200, "text/html", 
-      F("<html><head><title>Flip Flap</title></head><body><h1>Flip Flap</h1>"
+    "<html><head><meta charset='ISO-8859-1'><title>Flip Flap</title></head><body><h1>Flip Flap</h1>"
         "<form>"
-        "<input type='text' name='text' value='")
+        "<input type='text' name='text' value='"
       + escapeHtml(text) 
-      + F("'>"
+      + "'>"
         "<input type='submit'>"
         "</form>"
-        "</body></html>"));
+        "</body></html>");
   });
   server.begin();
 }
@@ -537,7 +536,7 @@ void setup() {
   inputTask.scheduleTask();
   controlTask.scheduleTask();
 
-  Serial.printf("\n\nReady\n");
+  Serial.println("\n\nReady");
 }
 
 

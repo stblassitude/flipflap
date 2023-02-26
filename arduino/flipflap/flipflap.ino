@@ -1,10 +1,14 @@
-#include <CoopTask.h>
-#include <SPI.h>
 #include <limits.h>
+#include <stdio.h>
 
-#define NCOLS 2
+#include <CoopTask.h>
+#include <ESP8266WiFi.h>
+#include <SPI.h>
+#include <WiFiManager.h> 
+
+#define NCOLS 3
 #define NROWS 1
-#define DEBUG 1
+#define DEBUG 0
 
 volatile byte desired_position[NCOLS][NROWS];
 volatile byte current_position[NCOLS][NROWS];
@@ -12,12 +16,21 @@ volatile byte current_position[NCOLS][NROWS];
 /**
  * Maps ISO-8859-1 characters (char) to their position on the display (index). Of the 64 encodings, 0 and 63 are not used; they are encoded as \0.
  */
-const char lookup[64] = "\000ABCDEFGHIJKLMNOPQRSTUVWXYZ ;=()?!,-./0123456789:\xd6\xc4\xd8\xdc\000";
+// const char lookup[64] = "\000ABCDEFGHIJKLMNOPQRSTUVWXYZ ;=()?!,-./0123456789:\xd6\xc4\xd8\xdc\000";
+const char lookup[64] = 
+  "\000\xdc\xd8\xc4\xd6:98"
+  "76543210"
+  "/.-,!?)("
+  "=;      "
+  "     ZYX"
+  "WVUTSRQP"
+  "ONMLKJIH"
+  "GFEDCBA"; // implicit \0 at end because of quoted string
 
 byte outputs[3];
 byte input;
 
-#if DEBUG==1
+#if DEBUG!=0
 #define debug(...) Serial.printf(__VA_ARGS__);
 #else
 #define debug(...)
@@ -164,7 +177,7 @@ int read_col_row(int col, int row) {
 int char_to_position(char c) {
   for (int i = 64; i--; ) {
     if (c == lookup[i])
-      return i ^ 0x3f;
+      return i;
   }
   return 63;
 }
@@ -172,7 +185,7 @@ int char_to_position(char c) {
 char position_to_char(int p) {
   if (p == 0 || p == 63)
     return '_';
-  return lookup[p ^ 0x3f];
+  return lookup[p];
 }
 
 /**
@@ -208,6 +221,7 @@ void print_state() {
  * Dump the state to the serial console.
  */
 void print_control_status() {
+#if DEBUG!=0
   Serial.print("Desired: ");
   for (int col = 0; col < NCOLS; col++) {
     for (int row = 0; row < NROWS; row++) {
@@ -223,6 +237,7 @@ void print_control_status() {
     }
   }
   Serial.print("\n");
+#endif
 }
 
 /**
@@ -240,6 +255,12 @@ long compute_deadline(int col, int row) {
   return (4500 * distance / 62) - 50; // experimentally determined
 }
 
+/**
+ * Start and stop the motor quickly. This is used if the motor stopped, but no position can be read.
+ * 
+ * @param col the column
+ * @param row the row
+ */
 void nudge(int col, int row) {
   select_none();
   update_outputs();
@@ -251,6 +272,72 @@ void nudge(int col, int row) {
   select_none();
   set_start();
   update_outputs();
+}
+
+String escapeHtml(String s) {
+  String r = "";
+  for (int i = 0; i < s.length(); i++) {
+    char c = s.charAt(i);
+    switch (c) {
+      case '\'':
+        r += "&apos;";
+        break;
+      case '"':
+        r += "&quot;";
+        break;
+      case '<':
+        r += "&lt;";
+        break;
+      case '&':
+        r += "&amp;";
+        break;
+      default:
+        r += c;
+    }
+  }
+  return r;
+}
+
+void updateText(String s) {
+  s.trim();
+  if (s.equals("^")) {
+    Serial.printf("Stopping...\n");
+    for (int col = 0; col < NCOLS; col++) {
+      for (int row = 0; row < NROWS; row++) {
+        desired_position[col][row] = 63;
+      }
+    }
+    stop_all();
+  } else if (s.charAt(0) == '*') {
+      s.setCharAt(0, ' ');
+      int p = s.toInt();
+      for (int col = 0; col < NCOLS; col++) {
+        for (int row = 0; row < NROWS; row++) {
+          desired_position[col][row] = p;
+        }
+      }
+  } else {
+    int space = char_to_position(' ');
+    int i = 0;
+    for (int col = 0; col < NCOLS; col++) {
+      for (int row = 0; row < NROWS; row++) {
+        desired_position[col][row] = space;
+      }
+    }
+    s.toUpperCase();
+    Serial.printf("Updating \"%s\"\n", s);
+    for (int col = 0; col < NCOLS && i < s.length(); col++) {
+      for (int row = 0; row < NROWS && i < s.length(); row++) {
+        int p;
+        do {
+          p = char_to_position(s.charAt(i++));
+        } while (p <= 0 && p >= 63 && i < s.length());
+        if (p > 0 && p < 63) {
+          desired_position[col][row] = p;
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -299,7 +386,7 @@ void control_displays() {
       }
     }
     if (!running) {
-      delay(1000); // nothing to do, give time to other tasks
+      delay(50); // nothing to do, give time to other tasks
       continue;
     }
     print_control_status();
@@ -334,11 +421,6 @@ void control_displays() {
     } while (running);
     debug("  done nudging\n");
     print_control_status();
-    // for (int col = 0; col < NCOLS; col++) {
-    //   for (int row = 0; row < NROWS; row++) {
-    //     desired_position[col][row] = 63;
-    //   }
-    // }
   }
 }
 
@@ -355,37 +437,7 @@ void console_input() {
     }
     s = Serial.readString();
     if (s.length() > 0) {
-      if (s.equals("^")) {
-        Serial.printf("Stopping...\n");
-        for (int col = 0; col < NCOLS; col++) {
-          for (int row = 0; row < NROWS; row++) {
-            desired_position[col][row] = 63;
-          }
-        }
-        stop_all();
-        continue;
-      }
-
-      int space = char_to_position(' ');
-      int i = 0;
-      for (int col = 0; col < NCOLS; col++) {
-        for (int row = 0; row < NROWS; row++) {
-          desired_position[col][row] = space;
-        }
-      }
-      s.toUpperCase();
-      Serial.printf("Updating \"%s\"\n", s);
-      for (int col = 0; col < NCOLS && i < s.length(); col++) {
-        for (int row = 0; row < NROWS && i < s.length(); row++) {
-          int p;
-          do {
-            p = char_to_position(s.charAt(i++));
-          } while (p <= 0 && p >= 63 && i < s.length());
-          if (p != 0 && p != 63) {
-            desired_position[col][row] = p;
-          }
-        }
-      }
+      updateText(s);
     }
   }
 }
@@ -405,21 +457,64 @@ void heartbeat() {
   }
 }
 
+
 BasicCoopTask<CoopTaskStackAllocatorAsMember<2000>> heartbeatTask("heartbeat", heartbeat);
 BasicCoopTask<CoopTaskStackAllocatorAsMember<2000>> inputTask("input", console_input);
 BasicCoopTask<CoopTaskStackAllocatorAsMember<2000>> controlTask("control", control_displays);
 
-void nudgetest() {
-  for (;;) {
-    if (Serial.available()) {
-      Serial.read();
-      Serial.printf("\nnudge\n");
-      nudge(0, 0);
-    }
-    read_col_row(0, 0);
-    Serial.printf("position %3d\n", current_position[0][0]);
-    delay(1000);
+WiFiManager wifiManager;
+
+ESP8266WebServer server(80);
+
+
+void setupWifi() {
+  Serial.print("Connecting");
+  char apname[64];
+  sprintf(apname, "flipflap-%02x%02x%02x", WiFi.macAddress()[3], WiFi.macAddress()[4], WiFi.macAddress()[5]);
+  wifiManager.autoConnect(apname);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
   }
+  Serial.println();
+
+  Serial.print("Connected, IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void setupWebserver() {
+  server.onNotFound([]() {
+    String message = "File Not Found\n\n";
+    message += "URI: ";
+    message += server.uri();
+    message += "\nMethod: ";
+    message += (server.method() == HTTP_GET) ? "GET" : "POST";
+    message += "\nArguments: ";
+    message += server.args();
+    message += "\n";
+    for (uint8_t i = 0; i < server.args(); i++) { message += " " + server.argName(i) + ": " + server.arg(i) + "\n"; }
+    server.send(404, "text/plain", message);
+  });
+  server.on("/", [](){
+    String text = F("CCC HH");
+    for (int i = 0; i < server.args(); i++) {
+      if (server.argName(i) == "text") {
+        text = server.arg(i);
+        updateText(text);
+      }
+    }
+    server.send(200, "text/html", 
+      F("<html><head><title>Flip Flap</title></head><body><h1>Flip Flap</h1>"
+        "<form>"
+        "<input type='text' name='text' value='")
+      + escapeHtml(text) 
+      + F("'>"
+        "<input type='submit'>"
+        "</form>"
+        "</body></html>"));
+  });
+  server.begin();
 }
 
 void setup() {
@@ -435,21 +530,18 @@ void setup() {
   for (int i = 10; i--; )
     stop_all();
 
-  // Serial.printf("\n\nWaiting for keypress to start...");
-  // while(!Serial.available())
-  //   delay(10);
-  // Serial.read();
-
-  // nudgetest();
-
-  Serial.printf("\n\nReady\n");
-
+  setupWifi();
+  setupWebserver();
+    
   heartbeatTask.scheduleTask();
   inputTask.scheduleTask();
   controlTask.scheduleTask();
+
+  Serial.printf("\n\nReady\n");
 }
 
 
 void loop() {
   runCoopTasks();
+  server.handleClient();
 }

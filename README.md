@@ -10,7 +10,7 @@ The controller can address 8 lines and 15 columns, for a total of 120 characters
 The schematic [flipflap-sch.pdf](flipflap-sch.pdf) and the assembly diagram [flipflap-pcb.pdf](flipflap-pcb.pdf) show the details of the board.
 
 # Software
-Software is currently under development, and will be linked here.
+An Arduino sketch can be found in [arduino/flipflap](arduino/flipflap).
 
 # Documentation OMEGA OM3021
 Documentation for the split-flap display model can be found in [docs/](docs/). [Theory of Operation](docs/theory-of-operation.md) tries to explain how a microcontroller can control the displays.
